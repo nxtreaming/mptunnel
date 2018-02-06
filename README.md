@@ -1,5 +1,5 @@
 # mptunnel
-MultiPath Tunnel (Simpified user space MPUDP)
+MultiPath Tunnel (Simplified user space MPUDP)
 
 [中文说明](README.zh_CN.md)
 
@@ -23,7 +23,7 @@ searching for MPUDP implementation but got nothing, so I write this tool.
 ```
 
 There are two servers named Server A and Server B. The network connection between Server A and Server B is
-unstable (with high packet loss ratio). Thus, we like to establish a multipath tunnel between Server A
+unstable (with high packet loss ratio). Thus, we like to establish some multipath tunnels between Server A
 and Server B, hoping the connection between Server A and Server B becomes more stabilty (decrease
 packet loss ratio).
 

@@ -30,9 +30,9 @@ _桥_ 就是一个简单的数据包转发服务器，你可以用 _socat_ 或�
 
 ## 例子
 
-我有一台 OpenVPN 服务器，但是本机到 OpenVPN 服务器的网络丢包率很高，这很影响 OpenVPN 隧道之上的数据传输吞吐量。为了提高 吞吐量，就需要降低丢包率。于是，我可以先建立一条 MPUDP 隧道，然后在这个隧道上再建立 OpenVPN 连接。
+我有一台 OpenVPN 服务器，但是本机到 OpenVPN 服务器的网络丢包率很高，这很影响 OpenVPN 隧道之上的数据传输吞吐量。为了提高吞吐量，就需要降低丢包率。我可以先建立一条 MPUDP 隧道，然后在这个隧道上再建立 OpenVPN 连接。
 
-OpenVPN 在服务器的 1194 端口上监听。在 OpenVPN 上运行 mpserver：
+OpenVPN 监听服务器的 1194 端口，在 OpenVPN 上运行 mpserver：
 
 ```
 mpserver 2000 127.0.0.1 1194

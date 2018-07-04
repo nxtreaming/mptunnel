@@ -8,10 +8,7 @@
 typedef struct buffers_t {
     struct list_head list;
     uint64_t id;
-    char* buf;
+    char *buf;
     int buflen;
 } buffers_t;
-
-
-
 #endif

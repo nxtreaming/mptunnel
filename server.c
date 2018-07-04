@@ -22,128 +22,100 @@
 #include "client.h"
 
 #define UDP_KEEP_ALIVE 300
-
-/**
- * 一个 UDP 连接上，最后收到包的时间与最后发送包的时间的最大时间差
- */
+#define UDP_MAX_SIZE  65536
 #define UDP_INTERACTIVE_TIMEOUT 60
 
-
-static struct ev_loop * g_ev_reactor = NULL;
-
-static struct list_head g_buffers = LIST_HEAD_INIT(g_buffers);
+static struct ev_loop *g_ev_reactor = NULL;
 
 static struct list_head g_bridge_list = LIST_HEAD_INIT(g_bridge_list);
 static pthread_mutex_t g_bridge_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int g_listen_fd = -1;
-static int g_target_fd = -1;
+static int g_upstream_fd = -1;
 
 static int g_listen_port = 0;
-static char *g_target_host = NULL;
-static int g_target_port = 0;
+static char *g_upstream_host = NULL;
+static int g_upstream_port = 0;
 
 extern int g_config_encrypt;
 
-
-
-/**
- * 收到远程桥发来的数据时的处理函数
- */
-void recv_bridge_callback(struct ev_loop* reactor, ev_io* w, int events) {
-    char* buf;
-    int buflen = 65536;
-    int readb;
+static void recv_bridge_callback(struct ev_loop *reactor, ev_io *w, int events)
+{
+    char *buf;
+    int buf_len = UDP_MAX_SIZE, readb;
     struct sockaddr_in baddr;
-    
     static received_t *received = NULL;
+ 
     if (received == NULL) {
         received = malloc(sizeof(*received));
         received_init(received);
     }
     
-    buf = malloc(buflen);
-    memset(buf, 0x00, buflen);
+    buf = malloc(buf_len);
+    memset(buf, 0x00, buf_len);
     
-    bridge_t* b = (bridge_t*)malloc(sizeof(bridge_t));
-    memset(b, 0x00, sizeof(*b));
+    bridge_t *b = (bridge_t *)malloc(sizeof(bridge_t));
+    memset(b, 0, sizeof(*b));
     b->st_time = time(NULL);
     b->addrlen = sizeof(b->addr);
-    baddr = *(struct sockaddr_in*)&b->addr;
+    baddr = *(struct sockaddr_in *)&b->addr;
     
-    //LOGD("收到从桥端（fd=%d）发来的数据\n", w->fd);
-    
-    readb = recvfrom(w->fd, buf, buflen, 0, &b->addr, &b->addrlen);
+    readb = recvfrom(w->fd, buf, buf_len, 0, &b->addr, &b->addrlen);
     if (readb < 0) {
         LOGW(_("Bridge(fd=%d) may close the connection: %s\n"), w->fd, strerror(errno));
-        free(buf); free(b);
+        free(buf);
+        free(b);
         return;
-    }
-    else if (readb == 0) {
-        LOGW(_("Can't received packet from bridge（fd=%d），bridge may close the connection\n"), w->fd);
-        free(buf); free(b);
+    } else if (readb == 0) {
+        LOGW(_("Can't received packet from bridge(fd=%d)，bridge may close the connection\n"), w->fd);
+        free(buf);
+        free(b);
         return;
-    }
-    else {
-        //LOGD("从桥端(:%u)收取了 %d 字节数据：%s\n", htons(baddr.sin_port), readb, (char*)buf + sizeof(packet_t));
-        
-        int exists = 0;
+    } else {
+        int found = 0;
         bridge_t *lb;
         struct list_head *l;
+ 
         pthread_mutex_lock(&g_bridge_list_mutex);
-        
         list_for_each(l, &g_bridge_list) {
             lb = list_entry(l, bridge_t, list);
             if (memcmp(&lb->addr, &b->addr, sizeof(struct sockaddr)) == 0) {
-                exists = 1;
-                
+                found = 1;
                 free(b);
                 b = lb;
-                
                 break;
             }
         }
-        
         b->rc_time = time(NULL);
-        
-        if (exists != 1) {
-            /// 这是一个新客户端，将其添加到客户端列表中
+        if (!found) {
             LOGI(_("Got a new client, add it to Client List\n"));
             list_add(&b->list, &g_bridge_list);
         }
-
         pthread_mutex_unlock(&g_bridge_list_mutex);
     }
-    
-    
-    /// 解包，然后发送给目标服务器
-    packet_t* p;
-    
+       
     mpdecrypt(buf);
-    p = (packet_t*)buf;
-    
+
+    packet_t *p = (packet_t *)buf;
     if (p->type == PKT_TYPE_CTL) {
-        //LOGD("从桥端(:%u)收取了 %d 字节数据编号为 %d 的数据包，但这是一个控制包，丢弃之\n", htons(baddr.sin_port), readb, p->id);
-        LOGD(_("Received control packet from bridge (:%u) of %d bytes, packet ID is %d, drop it\n"), htons(baddr.sin_port), readb, p->id);
+        LOGD(_("Received control packet from bridge (:%u) of %d bytes, packet ID is %d, drop it\n"),
+            htons(baddr.sin_port), readb, p->id);
         free(buf);
         return;
-    }
-    else if (p->type != PKT_TYPE_DATA) {
-        //LOGD("从桥端(:%u)收取了 %d 字节编号为 %d 的数据包，但这是一个未知类型的数据包，丢弃之\n", htons(baddr.sin_port), readb, p->id);
-        LOGD(_("Received packet from bridge (:%u) of %d bytes, packet ID is %d, but packet type is unknown, drop it.\n"), htons(baddr.sin_port), readb, p->id);
+    } else if (p->type != PKT_TYPE_DATA) {
+        LOGD(_("Received packet from bridge (:%u) of %d bytes, packet ID is %d, but packet type is unknown, drop it.\n"),
+            htons(baddr.sin_port), readb, p->id);
         free(buf);
         return;
-    }
-    else {
-        //LOGD("从桥端(:%u)收取了 %d 字节编号为 %d 的数据包\n", htons(baddr.sin_port), readb, p->id);
+    } else {
+        LOGD(_("Received packet from bridge(:%u) of %d bytes, packet ID is %d\n"), htons(baddr.sin_port), readb, p->id);
     }
     
-    buflen = p->buflen;
-    buf = (char*)buf + sizeof(*p);
-    
+    buf_len = p->buflen;
+    buf = (char *)buf + sizeof(*p);
     if (received_is_received(received, p->id) == 1) {
-        //LOGD("从桥端(:%u)收取了 %d 字节编号为 %d 的曾经收取过的数据包，丢弃之\n", htons(baddr.sin_port), readb, p->id);
-        LOGD(_("Received packet from bridge (:%u) of %d bytes which was received, packet ID is %d, drop it\n"), htons(baddr.sin_port), readb, p->id);
+        LOGD(_("Received packet from bridge (:%u) of %d bytes which was received, packet ID is %d, drop it\n"),
+            htons(baddr.sin_port), readb, p->id);
         free(p);
         
         //received_destroy(received);
@@ -151,47 +123,33 @@ void recv_bridge_callback(struct ev_loop* reactor, ev_io* w, int events) {
         //received = NULL;
         
         return;
-    }
-    else {
-        //LOGD("从桥端(:%u)收取了 %d 字节编号为 %d 的数据包，转发该包\n", htons(baddr.sin_port), readb, p->id);
-        LOGD(_("Received packet from bridge (:%u) of %d bytes, ID is %d, forward it\n"), htons(baddr.sin_port), readb, p->id);
+    } else {
+        LOGD(_("Received packet from bridge (:%u) of %d bytes, ID is %d, forward it\n"),
+            htons(baddr.sin_port), readb, p->id);
         received_add(received, p->id);
     }
-    
-    
-    if (received != NULL) {
+ 
+    if (received != NULL)
         received_try_dropdead(received, 30);
-    }
     
-    
-    /// 发送给目标服务器
-    int sendb;
-    sendb = send(g_target_fd, buf, buflen, MSG_DONTWAIT);
+    int sendb = send(g_upstream_fd, buf, buf_len, MSG_DONTWAIT);
     if (sendb < 0) {
-        ///LOGW("无法向目标服务器发送编号为 %d 的数据包：%s\n", p->id, strerror(errno));
         LOGW(_("Can't send packet #%d to target server: %s\n"), p->id, strerror(errno));
-    }
-    else if (sendb == 0) {
-        //LOGW("目标服务器可能已经断开了连接，无法转发 %d 号数据包\n", p->id);
+    } else if (sendb == 0) {
         LOGW(_("Connection to target server seems closed, can't forward packet #%d\n"), p->id);
-    }
-    else {
-        //LOGD("成功向目标服务器发送了 %d 字节数据：%s\n", buflen, buf);
+    } else {
+        LOGD(_("Send to target server %d byte：%s\n"), buf_len, buf);
     }
     
     free(p);
+
     return;
 }
 
-
-/**
- * ev 处理线程
- */
-void* ev_thread(void* ptr) {
+static void * listen_thread(void *ptr) 
+{
     int port = 3002;
-    
-    LOGD(_("libev thread started\n"));
-    
+       
     g_listen_fd = net_bind("0.0.0.0", port, SOCK_DGRAM);
     if (g_listen_fd < 0) {
         LOGE(_("Can't listen port %d: %s\n"), port, strerror(errno));
@@ -200,50 +158,43 @@ void* ev_thread(void* ptr) {
     
     g_ev_reactor = ev_loop_new(EVFLAG_AUTO);
      
-    ev_io* w = (ev_io*)malloc(sizeof(ev_io));
+    ev_io *w = (ev_io*)malloc(sizeof(ev_io));
     ev_io_init(w, recv_bridge_callback, g_listen_fd, EV_READ);
     ev_io_start(g_ev_reactor, w);
      
     ev_run(g_ev_reactor, 0);
-        
-    LOGW(_("libev thread exited\n"));
 }
 
-
-/**
- * 向桥们发送数据
- */
-int send_to_servers(char* buf, int buflen) {
-    struct sockaddr* addr;
+static int send_to_bridges(char *buf, int len)
+{
+    struct sockaddr *addr;
     struct sockaddr_in *baddr;
     socklen_t addrlen;
     int sendb;
     char ipstr[128] = {0};
     static int id = 0;
     
-    if (buflen > MAX_PACKET_SIZE) {
+    if (len > MAX_PACKET_SIZE) {
         int ret = 0;
-        int split = buflen / 2;
+        int split = len / 2;
         
-        //LOGI("要发送的数据大小为 %d 字节，超过最大包大小(%d 字节)，将该包拆分为两个小包后再尝试发送\n", buflen, MAX_PACKET_SIZE);
-        LOGI(_("Packet is %d bytes, which excees max packet size limit (%d bytes), spilt the packet into two smaller packets before send.\n"), buflen, MAX_PACKET_SIZE);
+        LOGI(_("Packet is %d bytes, which exceeds max packet size limit (%d bytes), "
+            "spilt the packet into two smaller packets before send.\n"), buflen, MAX_PACKET_SIZE);
         
-        ret += send_to_servers(buf, split);
-        ret += send_to_servers(buf + split, buflen - split);
+        ret += send_to_bridges(buf, split);
+        ret += send_to_bridges(buf + split, len - split);
         return ret;
     }
     
+    packet_t *pkt = (packet_t *)malloc(sizeof(*pkt) + len);
+    pkt->type = PKT_TYPE_DATA;
+    pkt->id = ++id;
+    pkt->buflen = len;
+    memcpy(((char*)pkt) + sizeof(*pkt), buf, len);
     
-    packet_t* p;
-    packet_t rawp;
-    p = (packet_t*)malloc(sizeof(*p) + buflen);
-    p->type = PKT_TYPE_DATA;
-    p->id = ++id;
-    p->buflen = buflen;
-    memcpy(((char*)p) + sizeof(*p), buf, buflen);
-    
-    rawp = *p;
-    mpencrypt((char*)p, buflen + sizeof(*p));
+    packet_t rawpkt = *pkt;
+ 
+    mpencrypt((char *)pkt, len + sizeof(*pkt));
     
     int ts = time(NULL);
     bridge_t *b;
@@ -251,20 +202,19 @@ int send_to_servers(char* buf, int buflen) {
     
     list_for_each_safe(l, tmp, &g_bridge_list) {
         b = list_entry(l, bridge_t, list);
-        baddr = (struct sockaddr_in*)&b->addr;
-        
-        /// 1. 检查连接是否超时
+        baddr = (struct sockaddr_in *)&b->addr;
         if (ts - b->rc_time > UDP_KEEP_ALIVE) {
-            //LOGD("桥（%s:%u）空闲了 %d 秒，认为此桥已经断开，不向其转发数据包 %d\n", ipstr, ntohs(baddr->sin_port), ts - b->rc_time, p->id);
-            LOGD(_("No packet received from bridge (%s:%u) for %d seconds, assume the connection is closed, stop forward packet to it %d\n"), ipstr, ntohs(baddr->sin_port), ts - b->rc_time, p->id);
+            LOGD(_("No packet received from bridge (%s:%u) for %d seconds, assume the connection is closed, "
+                "stop forward packet to it %d\n"), ipstr, ntohs(baddr->sin_port), ts - b->rc_time, pkt->id);
             list_del(l);
             free(l);
             continue;
         }
-        
         if (abs(b->rc_time - b->st_time) > UDP_INTERACTIVE_TIMEOUT) {
-            //LOGD("桥（%s:%u）最后发包与收包时间之差超过了 %d 秒（实际：%d），认为此桥已经断开，不向其转发数据包 %d\n", ipstr, ntohs(baddr->sin_port), UDP_INTERACTIVE_TIMEOUT, b->rc_time - b->st_time, p->id);
-            LOGD(_("The time difference between packet received and packet sent of bridge %s:%u is larger than %d seconds (Actually %d seconds), assume the connection is broken, stop forward packet to it %d\n"), ipstr, ntohs(baddr->sin_port), UDP_INTERACTIVE_TIMEOUT, b->rc_time - b->st_time, p->id);
+            LOGD(_("The time difference between packet received and packet sent of bridge %s:%u is "
+                "larger than %d seconds (Actually %d seconds), assume the connection is broken, "
+                "stop forward packet to it %d\n"), ipstr, ntohs(baddr->sin_port), 
+                UDP_INTERACTIVE_TIMEOUT, b->rc_time - b->st_time, pkt->id);
             list_del(l);
             free(l);
             continue;
@@ -272,86 +222,77 @@ int send_to_servers(char* buf, int buflen) {
         
         b->st_time = time(NULL);
         
-        
-        /// 2. 发送数据包
-        sendb = sendto(g_listen_fd, p, buflen + sizeof(*p), 0, &b->addr, b->addrlen);
+        sendb = sendto(g_listen_fd, pkt, len + sizeof(*pkt), 0, &b->addr, b->addrlen);
         if (sendb < 0) {
-            //LOGW("无法向桥(%s:%d)发送 %d 字节数据，包编号 %d: %s\n", ipstr, ntohs(baddr->sin_port), buflen, rawp.id, strerror(errno));
-            LOGW(_("Can't send packet to bridge(%s:%d) of %d bytes, packet ID is %d: %s\n"), ipstr, ntohs(baddr->sin_port), buflen, rawp.id, strerror(errno));
-        }
-        else if (sendb == 0) {
-            LOGW("Can't send packet to bridge, bridge may close the connection\n");
-        }
-        else {
-            //LOGD("向桥（端口：%u）发送了 %d 字节数据，包编号 %d\n", ntohs(baddr->sin_port), sendb, rawp.id);
-            LOGD(_("Forward packet to bridge(port %u) of %d bytes, packet ID is %d\n"), ntohs(baddr->sin_port), sendb, rawp.id);
+            LOGW(_("Can't send packet to bridge(%s:%d) of %d bytes, packet ID is %d: %s\n"),
+                ipstr, ntohs(baddr->sin_port), buflen, rawp.id, strerror(errno));
+        } else if (sendb == 0) {
+            LOGW(_("Can't send packet to bridge, bridge may close the connection\n"));
+        } else {
+            LOGD(_("Forward packet to bridge(port %u) of %d bytes, packet ID is %d\n"), 
+                ntohs(baddr->sin_port), sendb, rawp.id);
         }
     }
     
-    free(p);
+    free(pkt);
     
     return 0;
 }
 
-
-
-
-/**
- * 用于转发服务器消息到客户端的线程
- */
-void* server_thread(void* ptr) {
-    int readb, sendb, buflen;
-    char* buf;
+static void * upstream_thread(void *ptr)
+{
+    int buf_len;
+    char *buf;
     
-    LOGD(_("Thread which forward packet from server to bridge is started\n"));
+    buf_len = UDP_MAX_SIZE;
+    buf = malloc(buf_len);
+    if (!buf) {
+        LOGE(_("Fail to allocate memory(size: %d).\n"), buf_len);
+        return NULL;
+    }
     
-    
-    buflen = 65536;
-    buf = malloc(buflen);
-    
-    g_target_fd = net_connect(g_target_host, g_target_port, SOCK_DGRAM);
-    if (g_target_fd < 0) {
-        LOGE(_("Could not connect to target server：%s\n"), strerror(errno));
+    g_upstream_fd = net_connect(g_upstream_host, g_upstream_port, SOCK_DGRAM);
+    if (g_upstream_fd < 0) {
+        LOGE(_("Could not connect to upstream server：%s\n"), strerror(errno));
         return NULL;
     }
     
     while (1) {
-        memset(buf, 0x00, sizeof(buflen));
-        readb = recv(g_target_fd, buf, buflen, 0);
+        int readb = recv(g_upstream_fd, buf, buf_len, 0);
         if (readb < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 continue;
-            }
-            else {
-                LOGI(_("Target server close the connection: %s\n"), strerror(errno));
-                g_target_fd = net_connect(g_target_host, g_target_port, SOCK_DGRAM);
+            } else {
+                LOGI(_("Upstream server close the connection: %s\n"), strerror(errno));
+                close(g_upstream_fd);
+                g_upstream_fd = net_connect(g_upstream_host, g_upstream_port, SOCK_DGRAM);
+                if (g_upstream_fd < 0) {
+                    LOGE(_("Could not connect to upstream server：%s\n"), strerror(errno));
+                    break;
+                }
                 continue;
             }
-        }
-        else if (readb == 0) {
+        } else if (readb == 0) {
             LOGW(_("Can't received packet from server, server close the connection\n"));
-            g_target_fd = net_connect(g_target_host, g_target_port, SOCK_DGRAM);
+            close(g_upstream_fd);
+            g_upstream_fd = net_connect(g_upstream_host, g_upstream_port, SOCK_DGRAM);
+            if (g_upstream_fd < 0) {
+                LOGE(_("Could not connect to upstream server：%s\n"), strerror(errno));
+                break;
+            }
             continue;
-        }
-        else {
-            /// 收到了数据，将数据转发给桥
-            send_to_servers(buf, readb);
+        } else {
+            send_to_bridges(buf, readb);
         }
     }
     
     free(buf);
     
-    LOGD(_("Thread which forward packet from server to bridge exited\n"));
-    
     return NULL;
 }
 
-
-
-
-int main(int argc, char** argv) {
-    int clientfd, listenfd;
-    
+int main(int argc, char **argv)
+{
     setlocale(LC_ALL, "");
     bindtextdomain("mptunnel", "locale");
     textdomain("mptunnel");
@@ -360,79 +301,39 @@ int main(int argc, char** argv) {
         fprintf(stderr, _("Usage: <%s> <listen_port> <target_ip> <target_port>\n"), argv[0]);
         fprintf(stderr, _("To disable encryption, set environment variable MPTUNNEL_ENCRYPT=0\n"));
         exit(-1);
-    }
-    else {
-        /// 载入配置信息
+    } else {
         g_listen_port = atoi(argv[1]);
-        g_target_host = strdup(argv[2]);
-        g_target_port = atoi(argv[3]);
+        g_upstream_host = strdup(argv[2]);
+        g_upstream_port = atoi(argv[3]);
         
         if (g_listen_port <= 0 || g_listen_port >= 65536) {
             LOGE("Invalid listen port `%s'\n", argv[1]);
             exit(-2);
         }
-        if (g_target_port <= 0 || g_target_port >= 65536) {
+        if (g_upstream_port <= 0 || g_upstream_port >= 65536) {
             LOGE("Invalid target port `%s'\n", argv[3]);
             exit(-3);
         }
         
         if (getenv("MPTUNNEL_ENCRYPT") == NULL) {
             g_config_encrypt = 1;
-        }
-        else if(atoi(getenv("MPTUNNEL_ENCRYPT")) == 0) {
+        } else if(atoi(getenv("MPTUNNEL_ENCRYPT")) == 0) {
             g_config_encrypt = 0;
-        }
-        else {
+        } else {
             g_config_encrypt = 1;
         }
-        
-        
-        LOGD(_("Configuration: Encryption %s\n"), (g_config_encrypt) ? _("enabled") : _("disabled"));
-        LOGD(_("Configuration: Local listening port: %d\n"), g_listen_port);
-        LOGD(_("Configuration: server：%s:%d\n"), g_target_host, g_target_port);
     }
     
-    
-    
-    LOGD(_("Initializing libev thread\n"));
     pthread_t tid;
-    pthread_create(&tid, NULL, ev_thread, NULL);
+    pthread_create(&tid, NULL, listen_thread, NULL);
     pthread_detach(tid);
-    
 
-
-    /// 创建转发数据到目标服务器的线程
-    int* ptr = malloc(sizeof(int));
-    *ptr = clientfd;
-    pthread_create(&tid, NULL, server_thread, NULL);
+    pthread_create(&tid, NULL, upstream_thread, NULL);
     pthread_detach(tid);
     
     while (1) {
         sleep(100);
     }
 
-    
     return 0;
 }
-
-
-
-
-/**
- * 初始化一个接收器 ev，用来处理收到的数据
- */
-ev_io* init_recv_ev(int fd) {
-    ev_io *watcher = (ev_io*)malloc(sizeof(ev_io));
-    memset(watcher, 0x00, sizeof(*watcher));
-    
-    ev_io_init(watcher, recv_bridge_callback, fd, EV_READ);
-    ev_io_start(g_ev_reactor, watcher);
-    
-    return watcher;
-}
-
-
-
-
-
-

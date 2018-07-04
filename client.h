@@ -3,7 +3,7 @@
 
 #include "buffer.h"
 
-void* client_thread(void* ptr);
+void * client_thread(void *ptr);
 
 int reconnect_to_server(connections_t *c);
 

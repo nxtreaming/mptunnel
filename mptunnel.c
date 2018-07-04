@@ -9,11 +9,6 @@
 
 #include "mptunnel.h"
 
-//static int* g_packet_id = NULL;
-
-//static int* g_received_id = NULL;
-
-
 /**
  * Enable or disable encryption. default = 1 (encrypt)
  */
@@ -28,10 +23,10 @@ static struct rb_root g_received_rbtree = RB_ROOT;
 /**
  * 组装一个数据包，组装出来的包需要调用 packet_free 进行释放
  */
-packet_t* packet_make(enum packet_type type, const char* buf, int buflen, int id) {
+packet_t * packet_make(enum packet_type type, const char *buf, int buflen, int id)
+{
     packet_t* p;
 
-    
     p = (packet_t*)malloc(sizeof(*p) + buflen);
     memset(p, 0x00, sizeof(*p));
     p->type = type;
@@ -44,16 +39,15 @@ packet_t* packet_make(enum packet_type type, const char* buf, int buflen, int id
     return p;
 }
 
-
-int packet_free(packet_t* p) {
+int packet_free(packet_t *p)
+{
     free(p);
     
     return 0;
 }
 
-    
-    
-int packet_send(int fd, char* buf, int buflen, int id) {
+int packet_send(int fd, char *buf, int buflen, int id)
+{
     int sendb;
     packet_t* p = packet_make(PKT_TYPE_DATA, buf, buflen, id);
 
@@ -75,39 +69,8 @@ int packet_send(int fd, char* buf, int buflen, int id) {
     return sendb;
 }
 
-
-/*
-int packet_received(int _id) {
-    if (g_received_id == NULL) {
-        g_received_id = malloc(sizeof(int));
-    }
-    
-    *g_received_id = _id;
-    
-    return 0;
-}
-*/
-
-/**
- * 判断一个包是否曾经接收过，如果接收过返回 1,否则返回 0
- */
-/*
-int packet_is_received(int _id) {
-    if (g_received_id == NULL) {
-        return 0;
-    }
-    else {
-        if (_id > *g_received_id) {
-            return 0;
-        }
-        else {
-            return 1;
-        }
-    }
-}
-*/
-
-int received_init(received_t* r) {
+int received_init(received_t *r)
+{
     pthread_mutexattr_t mutexattr;
     
     memset(r, 0x00, sizeof(*r));
@@ -122,7 +85,8 @@ int received_init(received_t* r) {
     return 0;
 }
 
-int received_destroy(received_t* r) {
+int received_destroy(received_t *r)
+{
     pthread_mutex_lock(&r->rlist_mutex);
     list_del_init(&r->rlist);
     pthread_mutex_unlock(&r->rlist_mutex);
@@ -135,8 +99,9 @@ int received_destroy(received_t* r) {
 /**
  * 收包管理器，从列表中删除一个 id
  */
-int received_list_del(received_t* r, int id) {
-    received_list_t* c;
+int received_list_del(received_t *r, int id)
+{
+    received_list_t *c;
     
     /// 从“已收到包列表”中删除这个 id 
     pthread_mutex_lock(&r->rlist_mutex);
@@ -145,8 +110,7 @@ int received_list_del(received_t* r, int id) {
     if (c != NULL) {
         rb_erase(&c->rbnode, &g_received_rbtree);
         free(c);
-    }
-    else {
+    } else {
         LOGW(_("Pakcet #%d is not exists in Received Packet List\n"), id);
     }
     
@@ -155,17 +119,17 @@ int received_list_del(received_t* r, int id) {
     return 0;
 }
 
-
 /**
  * 收包管理器，往列表中增加一个 id
  */
-int received_list_add(received_t* r, int id) {
+int received_list_add(received_t *r, int id)
+{
     pthread_mutex_lock(&r->rlist_mutex);
     
-    received_list_t* n;
+    received_list_t *n;
     
     n = malloc(sizeof(*n));
-    memset(n, 0x00, sizeof(*n));
+    memset(n, 0, sizeof(*n));
     n->ctime = time(NULL);
     n->id = id;
     
@@ -179,32 +143,28 @@ int received_list_add(received_t* r, int id) {
     return 0;
 }
 
-
 /**
  * 收包管理器：判断一个数据包是否已经收过了
  * 
  * @param int       如果一个数据包已经收到过了就返回 1,如果没有收到过就返回 0
  */
-int received_is_received(received_t* r, int id) {
+int received_is_received(received_t *r, int id) 
+{
     if (id <= r->min_con_id) {
         return 1;
-    }
-    else if (id > r->max_id) {
+    } else if (id > r->max_id) {
         return 0;
-    }
-    else {
+    } else {
         int ret = 0;
         
         /// 在列表中查找这个 id
         pthread_mutex_lock(&r->rlist_mutex);
         
         struct received_list_t *n;
-        
         n = received_rbtree_get(&g_received_rbtree, id);
         if (n != NULL) {
             ret = 1;
-        }
-        else {
+        } else {
             ret = 0;
         }
         
@@ -214,14 +174,14 @@ int received_is_received(received_t* r, int id) {
     }
 }
 
-
 /**
  * 收包管理器，记录收到了一个数据包
  * 
  * @param received_t*       收包管理器
  * @param int               刚刚收到的数据包的 id
  */
-int received_add(received_t* r, int id) {
+int received_add(received_t *r, int id)
+{
     /// 收到的数据包正好比“连续收到的最小数据包编号”大 1 的情况
     if (id == r->min_con_id + 1) {
         r->min_con_id = id;
@@ -248,10 +208,12 @@ int received_add(received_t* r, int id) {
  * @param received_t*       丢包管理器
  * @param int               丢弃多少秒内未收到的包。
  */
-int received_try_dropdead(received_t* r, int ttl) {
+int received_try_dropdead(received_t *r, int ttl)
+{
     long ts = time(NULL);
     if (r->last_dropdead_time + ttl <= ts) {
-        LOGD(_("Cleanup timed out packets, TTL=%d, last cleanup time is %ld, current time is %ld, elapsed time is %ld seconds\n"), ttl, r->last_dropdead_time, ts, ts - r->last_dropdead_time);
+        LOGD(_("Cleanup timed out packets, TTL=%d, last cleanup time is %ld, current time is %ld, "
+            "elapsed time is %ld seconds\n"), ttl, r->last_dropdead_time, ts, ts - r->last_dropdead_time);
         r->last_dropdead_time = ts;
     }
     else {
@@ -275,8 +237,11 @@ int received_try_dropdead(received_t* r, int ttl) {
                 /// 丢弃该 id 之前的所有数据包
                 /// 由于这个数据包是列表中最小的数据包，所以不需要清理列表，只需要将 minn 从列表中删除即可
                 
-                //LOGD("数据包“%d”收到的时间已经过去了 %ld 秒，认为之前所有的数据包都已经收到了，当前最小已收到连续包 id 是 %d\n", minn->id, time(NULL) - minn->ctime, r->min_con_id);
-                LOGD(_("Packet #%d was received and time elapsed %ld seconds, assume packets which ID is smaller than it are all received. The smallest ID of received packet is %d\n"), minn->id, time(NULL) - minn->ctime, r->min_con_id);
+                //LOGD("数据包“%d”收到的时间已经过去了 %ld 秒，认为之前所有的数据包都已经收到了，当前最小已收到连续包 id 是 %d\n", 
+                //    minn->id, time(NULL) - minn->ctime, r->min_con_id);
+                LOGD(_("Packet #%d was received and time elapsed %ld seconds, assume packets which ID is smaller"
+                    "than it are all received. The smallest ID of received packet is %d\n"), minn->id, 
+                    time(NULL) - minn->ctime, r->min_con_id);
                 
                 rb_erase(&minn->rbnode, &g_received_rbtree);
                 r->min_con_id = minn->id;
@@ -291,8 +256,7 @@ int received_try_dropdead(received_t* r, int ttl) {
         else {
             break;
         }
-    }
-    while (1);
+    } while (1);
     
     pthread_mutex_unlock(&r->rlist_mutex);
     
@@ -301,14 +265,11 @@ int received_try_dropdead(received_t* r, int ttl) {
     return 0;
 }
 
-
-
-
-
-int received_rbtree_add(struct rb_root* root, received_list_t *node) {
+int received_rbtree_add(struct rb_root *root, received_list_t *node)
+{
     struct rb_node **new = &(root->rb_node);
     struct rb_node *parent = NULL;
-    received_list_t* cur = NULL;
+    received_list_t *cur = NULL;
     
     while (*new) {
         parent = *new;
@@ -332,32 +293,31 @@ int received_rbtree_add(struct rb_root* root, received_list_t *node) {
     return 0;
 }
 
-int received_rbtree_del(struct rb_root* root, received_list_t *node) {
+int received_rbtree_del(struct rb_root *root, received_list_t *node)
+{
     rb_erase(&node->rbnode, root);
     return 0;
 }
 
-received_list_t* received_rbtree_get(struct rb_root* root, int id) {
-    received_list_t* node = NULL;
-    struct rb_node* cur = root->rb_node;
+received_list_t * received_rbtree_get(struct rb_root *root, int id)
+{
+    received_list_t *node = NULL;
+    struct rb_node *cur = root->rb_node;
     
     while (cur) {
         node = container_of(cur, received_list_t, rbnode);
         
         if (id < node->id) {
             cur = cur->rb_left;
-        }
-        else if (id > node->id) {
+        } else if (id > node->id) {
             cur = cur->rb_right;
-        }
-        else {
+        } else {
             return node;
         }
     }
     
     return NULL;
 }
-
 
 /**
  * 加密和解密内容
@@ -366,7 +326,8 @@ received_list_t* received_rbtree_get(struct rb_root* root, int id) {
  * @param int       要加密内容的长度
  * @param uint32_t  初始化向量
  */
-void encrypt_lfsr(char* _buf, int _size, uint32_t *iv) {
+void encrypt_lfsr(char *_buf, int _size, uint32_t *iv)
+{
     int i;
     unsigned char *buf = (unsigned char*)_buf;
     unsigned char ivc;
@@ -378,15 +339,17 @@ void encrypt_lfsr(char* _buf, int _size, uint32_t *iv) {
 }
 
 
-void decrypt_lfsr(char* _buf, int _size, uint32_t* iv) {
+void decrypt_lfsr(char *_buf, int _size, uint32_t *iv)
+{
     encrypt_lfsr(_buf, _size, iv);
 }
 
 /**
  * 对一个完整的 mptunnel 数据包进行加密和解密
  */
-void mpdecrypt(char* _buf) {
-    packet_t *p = (packet_t*)_buf;
+void mpdecrypt(char *_buf)
+{
+    packet_t *p = (packet_t *)_buf;
     uint32_t iv;
     
     if (g_config_encrypt == 0) {
@@ -404,14 +367,14 @@ void mpdecrypt(char* _buf) {
     decrypt_lfsr(_buf + sizeof(packet_t), p->buflen, &iv);
 }
 
-void mpencrypt(char* _buf, int _buflen) {
+void mpencrypt(char *_buf, int _buflen)
+{
     packet_t *p = (packet_t*)_buf;
     uint32_t iv;
     
     if (g_config_encrypt == 0) {
         return;
     }
-    
 
     iv = rand();
     p->iv = iv;
@@ -419,15 +382,14 @@ void mpencrypt(char* _buf, int _buflen) {
     encrypt_lfsr(_buf + sizeof(p->iv), _buflen - sizeof(p->iv), &iv);
 }
 
-
-
 /**
  * 一个简单的线性反馈移位寄存器随机数发生器
  * 
  * @param uint32_t      随机数种子（状态），该状态的值会被改变
  * @return uint32_t     一个 32 位无符号整型的随机数
  */
-uint32_t lfsr_rand(uint32_t *st) {
+uint32_t lfsr_rand(uint32_t *st)
+{
     unsigned char b32, b30, b26, b25, b;
     uint32_t r = 0x00;
     int i;

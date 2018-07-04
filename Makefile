@@ -13,16 +13,12 @@ mpclient: client.o net.o mptunnel.o rbtree.o
 mpserver: server.c mptunnel.o net.o rbtree.o
 	$(CC) $^  -o mpserver $(LDFLAGS)
 
-
 SOURCE = $(wildcard *.c)
 	sinclude $(SOURCE:.c=.d)
 	
 %.d: %.c
 	$(CC) -MT "$*.o $*.d" -MM $(CFLAGS) $< > $@
 
-
-
- 
 clean:
 	rm -f *.o
 	rm -f *.d
